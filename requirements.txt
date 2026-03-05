@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+statsmodels
+mord
+librosa
+soundfile
+openpyxl
+tqdm
+praat-parselmouth
