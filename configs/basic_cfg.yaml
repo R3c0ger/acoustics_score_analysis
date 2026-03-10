@@ -1,0 +1,35 @@
+dataset:
+  root_dir: "data"
+  name: "Chest_new0206"
+  score_file: "Chest_new0206_scores_matrix.xlsx"
+  raw_feats_dir: "raw_feats"
+  feat_score_matrix_dir: "feat_score_matrix"
+#  preprocess:
+
+output:
+  output_root_dir: "outputs"
+  raw_feats_dir: "raw_feats"
+  feats_stats_file: "feats_stats_summary.csv"
+
+acoustic_feats:
+  - "Jitter"
+  - "Shimmer"
+  - "H1H2"
+  - "HNR"
+  - "QValue"
+  - "SpectralSlope"
+  - "LowFreqEnergyRatio"
+  - "HighFreqNoiseRatio"
+  - "CPP"
+
+vocal_techs:
+  - "vibrato"
+  - "throat"
+  - "position"
+  - "open"
+  - "clean"
+  - "resonate"
+  - "unify"
+  - "falsetto"
+  - "chest"
+  - "nasal"

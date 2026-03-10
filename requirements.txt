@@ -5,8 +5,9 @@ scipy
 scikit-learn
 statsmodels
 mord
+praat-parselmouth
 librosa
 soundfile
 openpyxl
 tqdm
-praat-parselmouth
+omegaconf
