@@ -332,15 +332,63 @@ def extract_feats_from_single_wav(
     return task_log
 
 
-def extract_feats_stats_from_csv(raw_feats_dir, output_dir=None):
+def extract_feats_from_wav_dir(
+        wav_dir,
+        output_dir,
+        visualize=False,
+        overwrite=False
+):
+    """
+    从指定目录下的所有 WAV 文件中提取声乐特征，并保存为 CSV 文件。
+    每个 WAV 文件的每个声学特征对应一个 CSV 文件，保存在 output_dir 下的对应特征子目录中。
+    """
+    # 输入准备
+    if not os.path.isdir(wav_dir):
+        print(f"[!] Directory not found: {wav_dir}")
+        return
+    wav_files = [f for f in os.listdir(wav_dir) if f.lower().endswith(".wav")]
+    wav_files = sorted(wav_files)
+    print(f"[*] 在目录 {wav_dir} 中发现 {len(wav_files)} 个 WAV 文件，准备提取特征...")
+
+    # 输出准备
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    print(f"[*] 提取的特征将保存在目录 {output_dir} 下的对应子目录中。")
+
+    # 遍历 WAV 文件，提取特征
+    pbar = tqdm(
+        wav_files, total=len(wav_files),
+        desc="提取特征", unit="文件", dynamic_ncols=True
+    )
+    for idx, wav_file in enumerate(pbar, start=1):
+        start_t = time.perf_counter()
+        # 加载单个音频文件
+        wav_fullpath = os.path.join(wav_dir, wav_file)
+        audio, original_sr, target_sr = load_audio(wav_fullpath)
+        # 提取特征并保存为 CSV 文件
+        results = extract_feats_from_single_wav(
+            wav_file, raw_feats_dir, audio, target_sr,
+            visualize=visualize,  # 原始特征序列可视化
+            overwrite=overwrite,  # 已存在的特征 CSV 文件是否被覆盖（重新提取）
+        )
+        cost_s = time.perf_counter() - start_t
+        # 更新进度条和日志
+        status = ",".join([f"{k}:{v}" for k, v in results])
+        pbar.set_postfix({"步骤": f"{cost_s:.1f}s", "文件": wav_file})
+        tqdm.write(f"[{idx}/{len(wav_files)}] {wav_file} | {status}")
+    print("[+] 所有文件的特征提取已完成！")
+
+
+def extract_feats_stats_from_csv(raw_feats_dir, output_dir=None) -> pd.DataFrame:
     """
     提取所有音频文件的各个声学特征的各项统计信息，生成汇总字典。
     具体而言，从 CSV 文件中提取各个声学特征序列（feats series）的统计量（feats stats）。
-    若 output_dir 不为 None，则将提取的统计信息保存为 CSV 文件，便于后续分析和可视化。
+    第一列为音频文件名 audio_name，后续列为各个声学特征的统计信息，如 HNR。
+    若 output_dir 不为 None，则将提取的统计信息保存为 CSV 文件。
     """
     if not os.path.isdir(raw_feats_dir):
         print(f"[!] Directory not found: {raw_feats_dir}")
-        return {}
+        return pd.DataFrame()
     # 获取所有被提取的特征名称（即 raw_feats_dir 下的子目录名）
     feat_names = [
         d for d in os.listdir(raw_feats_dir)
@@ -361,20 +409,21 @@ def extract_feats_stats_from_csv(raw_feats_dir, output_dir=None):
                     continue
                 if wav_filename not in stats:
                     stats[wav_filename] = {}
-                # 提取声学特征序列的中位数作为统计信息（也可改为均值或其他统计量）
+                # 提取声学特征序列的中位数作为统计信息（也可添加/改为均值或其他统计量）
                 stats[wav_filename][feat_name] = np.median(series)
             except Exception as e:
                 print(f"[!] Error processing {csv_path}: {e}")
 
-    # 可选：将 stats 字典保存为 CSV 文件，便于后续分析
+    # 转换为 DataFrame，行索引为音频文件名，列为各个声学特征的统计信息
+    df_stats = pd.DataFrame.from_dict(stats, orient="index")
+    df_stats.index.name = "audio_filename"
+    # 可选地保存为 CSV 文件
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        df = pd.DataFrame.from_dict(stats, orient="index")
-        df.index.name = "audio_name"
-        output_csv_path = os.path.join(output_dir, "feats_stats_summary.csv")
-        df.to_csv(output_csv_path)
-        print(f"[+] Saved feat stats summary to {output_csv_path}")
-    return stats
+        output_csv_path = os.path.join(output_dir, "feats_data.csv")
+        df_stats.to_csv(output_csv_path)
+        print(f"[+] Saved feature statistics summary to {output_csv_path}")
+    return df_stats
 
 
 if __name__ == '__main__':
@@ -390,41 +439,29 @@ if __name__ == '__main__':
     score_file = cfg.dataset.score_file
     acoustic_feats = cfg.acoustic_feats
 
-    # 输入准备
+    # 输入输出目录准备
     data_root = os.path.join(proj_root, "data")
     wav_dir = os.path.join(data_root, dataset_name)
-    wav_files = [f for f in os.listdir(wav_dir) if f.lower().endswith(".wav")]
-    wav_files = sorted(wav_files)
-    print(f"[*] 在目录 {wav_dir} 中发现 {len(wav_files)} 个 WAV 文件，准备提取特征...")
-
-    # 输出目录准备
     outputs_root = os.path.join(proj_root, "outputs")
     raw_feats_dir = os.path.join(outputs_root, "raw_feats", dataset_name)
     for feat in acoustic_feats:
         os.makedirs(os.path.join(raw_feats_dir, feat), exist_ok=True)
-    print(f"[+] 输出目录已准备：{raw_feats_dir}")
 
-    # 遍历 WAV 文件，提取特征
-    pbar = tqdm(
-        wav_files, total=len(wav_files),
-        desc="提取特征", unit="文件", dynamic_ncols=True
-    )
-    for idx, wav_file in enumerate(pbar, start=1):
-        start_t = time.perf_counter()
-        wav_fullpath = os.path.join(wav_dir, wav_file)
-        audio, original_sr, target_sr = load_audio(wav_fullpath)
-        results = extract_feats_from_single_wav(
-            wav_file, raw_feats_dir, audio, target_sr,
-            visualize=True,  # 原始特征序列可视化
-            # overwrite=True,  # 已存在的特征 CSV 文件将被覆盖（重新提取）
-        )
-        cost_s = time.perf_counter() - start_t
-        # 更新进度条和日志
-        status = ",".join([f"{k}:{v}" for k, v in results])
-        pbar.set_postfix({"步骤": f"{cost_s:.1f}s", "文件": wav_file})
-        tqdm.write(f"[{idx}/{len(wav_files)}] {wav_file} | {status}")
-    print("[+] 所有文件的特征提取已完成！")
+    print("[*] 开始从 WAV 文件中提取声学特征...")
+    extract_feats_from_wav_dir(wav_dir, raw_feats_dir, visualize=True, overwrite=False)
 
     print("[*] 开始提取特征统计信息...")
-    stats = extract_feats_stats_from_csv(raw_feats_dir, outputs_root)
-    print(f"[+] 提取完成，共 {len(stats)} 个音频文件的特征统计信息已保存。")
+    df_stats = extract_feats_stats_from_csv(raw_feats_dir, outputs_root)
+    print(f"[+] 提取完成，共 {len(df_stats)} 个音频文件的特征统计信息已保存。")
+
+    print(f"[*] 加载评分矩阵：{score_file}")
+    from src.data_loader import load_score_matrix
+    score_path = os.path.join(data_root, dataset_name, score_file)
+    df_score = load_score_matrix(score_path)
+
+    print("[*] 开始合并评分矩阵和特征统计信息...")
+    from src.combined_data import CombinedData
+    combined_data = CombinedData(df_score, df_stats)
+    combined_data.save_to_csv(output_dir=outputs_root)
+    print("[+] 合并完成！")
+

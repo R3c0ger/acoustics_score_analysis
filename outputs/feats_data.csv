@@ -1,4 +1,4 @@
-audio_name,CPP,H1H2,HNR,HighFreqNoiseRatio,Jitter,LowFreqEnergyRatio,QValue,Shimmer,SpectralSlope
+audio_filename,CPP,H1H2,HNR,HighFreqNoiseRatio,Jitter,LowFreqEnergyRatio,QValue,Shimmer,SpectralSlope
 #A3-1.wav,0.279132,-3.835075,21.811493,0.010179,0.004089,0.796518,10.5,0.0177335,-0.00014
 #A3-3-A.wav,0.3164885,0.452671,23.567263,0.082233995,0.002847,0.148987,11.0,0.0135295,-0.000128
 #A3-3-B.wav,0.167963,3.320423,24.716747,0.108029,0.004337,0.939716,5.5,0.0160655,-0.000114

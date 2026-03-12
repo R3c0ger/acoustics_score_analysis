@@ -103,9 +103,16 @@ def load_audio(file_path, target_sr=44100, visualize=False):
     return processed_audio, original_sr, target_sr
 
 
-def load_score_matrix(path):
-    # 读取为 DataFrame
-    df = pd.read_excel(path)
+def load_score_matrix(path) -> pd.DataFrame:
+    """
+    从 Excel 文件加载评分矩阵，返回一个 DataFrame
+    将第一列 wav 文件名设置为索引（audio_filename），后续列为各个声乐特征的评分
+    """
+    try:
+        df = pd.read_excel(path)
+    except Exception as e:
+        print(f"[!] Error loading score matrix from {path}: {e}")
+        return pd.DataFrame()
     if df.empty:
         return df
     # 删去无数据的行
@@ -114,23 +121,12 @@ def load_score_matrix(path):
     )
     df = df[~mask_delete].copy()
     df = df.dropna(axis=0, how="all")
-
-    # 整理为嵌套字典，外部键为声乐特征，内部键为音频文件名。
-    # DataFrame 第一列（无列名）为 wav 文件名，后续列为各个声乐特征的评分
-    score_matrix = {}
-    wav_file_col_name = df.columns[0]
-    for vocal_tech in df.columns[1:]:
-        vocal_tech_scores = {}
-        for _, row in df.iterrows():
-            wav_file = row[wav_file_col_name]
-            if pd.isna(wav_file):
-                continue
-            score = row[vocal_tech]
-            if pd.isna(score):
-                continue
-            vocal_tech_scores[wav_file] = score
-        score_matrix[vocal_tech] = vocal_tech_scores
-    return score_matrix
+    # 将第一列设置为索引
+    col_name = "audio_filename"
+    if df.columns[0] != col_name:
+        df = df.rename(columns={df.columns[0]: col_name})
+    df = df.set_index(col_name)
+    return df
 
 
 def load_feat_series(csv_path):
