@@ -37,6 +37,10 @@ class CombinedData:
         if self._full_df.empty:
             raise ValueError("合并后的数据集为空！请检查评分文件和特征文件的文件名是否匹配。")
 
+        # 去掉Jitter值最大的行
+        max_jitter_idx = self._full_df['Jitter'].idxmax()
+        self._full_df = self._full_df.drop(index=max_jitter_idx)
+
         # 3. 自动识别技巧列和特征列
         # 逻辑：前 N 列是技巧 (根据 df_score 的列数)，之后全是特征
         n_tech_cols = len(df_score.columns)

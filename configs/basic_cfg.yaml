@@ -4,6 +4,10 @@ dataset:
   score_file: "Chest_new0206_scores_matrix.xlsx"
   raw_feats_dir: "raw_feats"
   feat_score_matrix_dir: "feat_score_matrix"
+  subset_groups:
+    - ["A", "1"]
+    - ["B", "1"]
+    - ["A", "B", "1"]  # All
 #  preprocess:
 
 output:
