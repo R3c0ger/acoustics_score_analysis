@@ -4,6 +4,8 @@ from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
+from scipy.stats import linregress, spearmanr
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LassoCV
 from sklearn.preprocessing import StandardScaler
@@ -249,6 +251,347 @@ def run_ordinal_regression(
         print(f"    -> {', '.join(significant_feats[:5])}{'...' if len(significant_feats) > 5 else ''}")
 
 
+def run_correlation_matrix(
+        dataset: CombinedData,
+        output_dir: str,
+        subset_types: Optional[List[str]] = None,
+):
+    """
+    构建 [技巧 x 特征] 的全局关联性矩阵。
+    使用 Spearman 秩相关系数，适用于有序评分与连续特征。
+    """
+    subset_types = subset_types if subset_types else ["A", "B", "1"]
+    subset_label = "+".join(subset_types)
+    print(f"[*] 运行全局关联矩阵分析 | 子集：{subset_label}")
+
+    tech_cols = dataset.tech_cols  # 10个技巧
+    feat_cols = dataset.feat_cols  # 9个声学特征
+
+    # 存储结果的列表
+    results_long = []
+
+    # 用于构建矩阵的字典 {tech: {feat: corr}}
+    matrix_data = {tech: {} for tech in tech_cols}
+    matrix_pvals = {tech: {} for tech in tech_cols}
+    matrix_slopes = {tech: {} for tech in tech_cols}
+
+    # 获取全量数据 (合并所有技巧列)
+    df_all = dataset.get_scores_feats_subset(subset_types)
+    if df_all.empty:
+        print("[!] 错误：无法提取有效数据。")
+        return
+    print(f"[*] 总样本量：{len(df_all)}")
+
+    # 遍历每一个技巧 (Y) 和 每一个特征 (X)
+    for tech in tech_cols:
+        y = df_all[tech].dropna().values
+        # 获取当前技巧有效的索引，确保 X 和 Y 对齐
+        valid_idx = df_all[tech].notna()
+
+        for feat in feat_cols:
+            x = df_all.loc[valid_idx, feat].values
+            if len(x) != len(y):
+                continue
+            x_arr = x.astype(np.float64)
+            y_arr = y.astype(np.float64)
+
+            # 1. 计算 Spearman 相关系数
+            corr, p_val = spearmanr(x_arr, y_arr)
+
+            # 2. 计算简单线性回归斜率 (仅用于指示方向和相对强度，非因果)
+            # 先标准化 X 以便斜率具有可比性 (表示 X 变动 1 个标准差，Y 变动多少)
+            if np.std(x_arr) == 0:
+                slope = 0.0
+            else:
+                z_x = (x_arr - np.mean(x_arr)) / np.std(x_arr)
+                slope, _, _, _, _ = linregress(z_x, y_arr)
+
+            # 记录结果
+            results_long.append(
+                {
+                    "technique": tech,
+                    "feature": feat,
+                    "spearman_corr": corr,
+                    "p_value": p_val,
+                    "slope_std": slope,  # 标准化后的斜率
+                    "sample_size": len(x),
+                    "significant": p_val < 0.05
+                }
+            )
+
+            # 填充矩阵数据
+            matrix_data[tech][feat] = corr
+            matrix_pvals[tech][feat] = p_val
+            matrix_slopes[tech][feat] = slope
+
+    # --- 结果整理与保存 ---
+    out_path = os.path.join(output_dir, "global_correlation_matrix")
+    os.makedirs(out_path, exist_ok=True)
+
+    # 1. 保存长表 (详细数据)
+    df_long = pd.DataFrame(results_long)
+    df_long.to_csv(os.path.join(out_path, "correlation_details.csv"), index=False)
+    print(f"[+] 已保存详细数据：correlation_details.csv")
+
+    # 2. 构建并保存相关性矩阵 (Heatmap Data)
+    df_corr_matrix = pd.DataFrame(matrix_data).T  # 行：技巧，列：特征
+    df_corr_matrix = df_corr_matrix[feat_cols]  # 确保列顺序一致
+    df_corr_matrix.to_csv(os.path.join(out_path, "correlation_matrix_spearman.csv"))
+
+    # 3. 构建并保存 P值矩阵 (用于标记显著性)
+    df_pval_matrix = pd.DataFrame(matrix_pvals).T
+    df_pval_matrix = df_pval_matrix[feat_cols]
+    df_pval_matrix.to_csv(os.path.join(out_path, "correlation_matrix_pvalues.csv"))
+
+    # 4. 绘制热力图
+    plt.figure(figsize=(12, 8), dpi=150)
+    # 使用掩膜隐藏不显著的结果 (可选，这里我们显示所有但用星号标记)
+    # 这里直接画相关系数
+    sns.heatmap(
+        df_corr_matrix,
+        annot=True,
+        fmt=".2f",
+        cmap="coolwarm",
+        center=0,
+        vmin=-1,
+        vmax=1,
+        linewidths=0.5,
+        cbar_kws={"label": "Spearman Correlation Coefficient"}
+    )
+    plt.title(f"Global Correlation Matrix: Techniques vs Acoustic Features\n(Subsets: {subset_label})", fontsize=14)
+    plt.xlabel("Acoustic Features", fontsize=12)
+    plt.ylabel("Vocal Techniques", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_path, "correlation_heatmap.png"), dpi=300)
+    plt.close()
+    print(f"[+] 已保存热力图：correlation_heatmap.png")
+
+    # 5. 打印显著关联摘要
+    sig_df = df_long[df_long["significant"]].sort_values(by="spearman_corr", key=abs, ascending=False)
+    print(f"\n[+] 发现 {len(sig_df)} 个显著关联 (p<0.05):")
+    if not sig_df.empty:
+        print(sig_df[["technique", "feature", "spearman_corr", "p_value"]].to_string(index=False))
+    else:
+        print("    (无显著关联)")
+
+
+def run_lasso_correlation_matrix(
+        dataset: CombinedData,
+        output_dir: str,
+        subset_types: list = None,
+):
+    """
+    构建 [技巧 x 特征] 的 Lasso 关联矩阵。
+    矩阵值：标准化后的回归系数。0 表示该特征被 Lasso 剔除（无独立关联）。
+    """
+    subset_types = subset_types if subset_types else ["A", "B", "1"]
+    subset_label = "+".join(subset_types)
+    print(f"[*] 运行 Lasso 关联矩阵 | 子集：{subset_label}")
+
+    tech_cols = dataset.tech_cols
+    feat_cols = dataset.feat_cols
+
+    # 获取全量数据
+    df_all = dataset.get_scores_feats_subset(subset_types)
+    if df_all.empty:
+        return
+    print(f"[*] 总样本量：{len(df_all)}")
+
+    # 初始化矩阵
+    lasso_matrix = pd.DataFrame(np.nan, index=tech_cols, columns=feat_cols)
+    lasso_selection_count = pd.Series(0, index=feat_cols)  # 统计每个特征被选中的次数
+
+    for tech in tech_cols:
+        # 准备数据
+        valid_idx = df_all[tech].notna()
+        y = df_all.loc[valid_idx, tech].values
+        X = df_all.loc[valid_idx, feat_cols].values
+
+        # 标准化
+        scaler = StandardScaler()
+        Xz = scaler.fit_transform(X)
+
+        # 运行 LassoCV
+        try:
+            model = LassoCV(cv=5, random_state=42, max_iter=10000, n_alphas=100)
+            model.fit(Xz, y)
+            coefs = model.coef_
+        except Exception as e:
+            print(f"[!] Lasso 拟合失败 ({tech}): {e}")
+            coefs = np.zeros(len(feat_cols))  # 失败则视为全0
+
+        # 填入矩阵
+        for i, feat in enumerate(feat_cols):
+            val = coefs[i]
+            # 设定一个极小的阈值视为 0 (数值噪声)
+            if abs(val) < 1e-6:
+                val = 0.0
+            lasso_matrix.loc[tech, feat] = val
+            if val != 0.0:
+                lasso_selection_count[feat] += 1
+
+    # --- 保存与绘图 ---
+    os.makedirs(output_dir, exist_ok=True)
+    lasso_matrix.to_csv(os.path.join(output_dir, "lasso_correlation_matrix.csv"))
+    # 绘图
+    plt.figure(figsize=(12, 8), dpi=150)
+    # 使用 diverging colormap, 0 为白色/中性
+    sns.heatmap(
+        lasso_matrix,
+        annot=True,
+        fmt=".2f",
+        cmap="RdBu_r",
+        center=0,
+        vmin=-1,  # 可根据实际数据调整范围
+        vmax=1,
+        linewidths=0.5,
+        cbar_kws={"label": "Standardized Coefficient"}
+    )
+    plt.title(f"Lasso Correlation Matrix (Multivariate)\n(Subsets: {subset_label})", fontsize=14)
+    plt.xlabel("Acoustic Features")
+    plt.ylabel("Vocal Techniques")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "lasso_heatmap.png"), dpi=300)
+    plt.close()
+
+    print(f"[+] Lasso 矩阵完成。保存于: {output_dir}")
+    print(f"    特征被选中频次:\n{lasso_selection_count.sort_values(ascending=False)}")
+
+
+def run_ordinal_correlation_matrix(
+        dataset: CombinedData,
+        output_dir: str,
+        subset_types: list = None,
+        metric: str = "coef"  # 可选: "coef" (系数) 或 "or" (优势比)
+):
+    """
+    构建 [技巧 x 特征] 的序数回归关联矩阵。
+    矩阵值：
+      - 如果 metric='coef': 标准化系数 (正负表示方向)。
+      - 如果 metric='or': 优势比 (大于1为正相关，小于1为负相关)。
+    仅当 p < 0.05 且模型收敛时填入，否则为 NaN。
+    """
+    subset_types = subset_types if subset_types else ["A", "B", "1"]
+    subset_label = "+".join(subset_types)
+    print(f"[*] 运行序数回归关联矩阵 ({metric}) | 子集：{subset_label}")
+
+    tech_cols = dataset.tech_cols
+    feat_cols = dataset.feat_cols
+
+    df_all = dataset.get_scores_feats_subset(subset_types)
+    if df_all.empty:
+        return
+
+    # 初始化矩阵
+    ord_matrix = pd.DataFrame(np.nan, index=tech_cols, columns=feat_cols)
+    ord_pval_matrix = pd.DataFrame(np.nan, index=tech_cols, columns=feat_cols)
+    convergence_stats = {"success": 0, "failed": 0, "separation": 0}
+
+    for tech in tech_cols:
+        valid_idx = df_all[tech].notna()
+        y = df_all.loc[valid_idx, tech].values.astype(int)
+        X = df_all.loc[valid_idx, feat_cols].values
+
+        # 标准化
+        scaler = StandardScaler()
+        Xz = scaler.fit_transform(X)
+        df_model = pd.DataFrame(Xz, columns=feat_cols)
+
+        y_cat = pd.Categorical(y, categories=sorted(np.unique(y)), ordered=True)
+        try:
+            # 拟合模型
+            model = OrderedModel(endog=y_cat, exog=df_model, distr='probit')
+            result = model.fit(method='bfgs', maxiter=5000, disp=False)
+
+            # 【关键检查】1. 收敛性
+            if not result.mle_retvals.get('converged', False):
+                convergence_stats["failed"] += 1
+                continue  # 不收敛则不填入
+
+            # 【关键检查】2. 系数合理性 (防止完全分离导致的爆炸)
+            params = result.params
+            if np.any(np.abs(params) > 10):  # 阈值设为 10，超过视为异常
+                convergence_stats["separation"] += 1
+                # print(f"[!] 检测到分离现象 ({tech})，跳过该行。")
+                continue
+
+            # 提取结果
+            pvals = result.pvalues
+            coeffs = params
+
+            for i, feat in enumerate(feat_cols):
+                p = pvals.iloc[i] if hasattr(pvals, 'iloc') else pvals[i]
+                c = coeffs.iloc[i] if hasattr(coeffs, 'iloc') else coeffs[i]
+
+                if p < 0.05:  # 仅保留显著项
+                    if metric == "coef":
+                        ord_matrix.loc[tech, feat] = c
+                    elif metric == "or":
+                        ord_matrix.loc[tech, feat] = np.exp(c)
+
+                    ord_pval_matrix.loc[tech, feat] = p
+
+            convergence_stats["success"] += 1
+        except Exception as e:
+            convergence_stats["failed"] += 1
+            # print(f"[!] 序数回归报错 ({tech}): {e}")
+
+    # --- 保存与绘图 ---
+    os.makedirs(output_dir, exist_ok=True)
+    ord_matrix.to_csv(os.path.join(output_dir, f"ordinal_correlation_matrix_{metric}.csv"))
+    ord_pval_matrix.to_csv(os.path.join(output_dir, "ordinal_pvalues_matrix.csv"))
+
+    # 绘图配置
+    if metric == "or":
+        # OR 值绘图需要特殊处理，因为 1 是中点，且刻度是对数的
+        # 为了热力图美观，通常对 OR 取 log，或者使用特殊的 cmap
+        # 这里我们直接画 log(OR)，这样 0 是中点，正负分明
+        plot_data = np.log(ord_matrix)
+        center_val = 0
+        cmap_name = "coolwarm"
+        cbar_label = "Log(Odds Ratio)"
+        fmt_val = ".2f"
+        # 注意：annot 显示的是 log 值，如果需要显示原始 OR 值，需要自定义 annot
+        # 为了简单，这里显示 log 值，或者我们可以手动格式化 annot
+        annot_data = ord_matrix.round(2)  # 显示原始 OR 值在格子里
+    else:
+        plot_data = ord_matrix
+        center_val = 0
+        cmap_name = "RdBu_r"
+        cbar_label = "Coefficient (Probit)"
+        fmt_val = ".2f"
+        annot_data = ord_matrix.round(2)
+    plt.figure(figsize=(12, 8), dpi=150)
+
+    # 使用 mask 隐藏 NaN
+    mask = ord_matrix.isnull()
+    ax = sns.heatmap(
+        plot_data,
+        annot=annot_data,
+        fmt=fmt_val,
+        cmap=cmap_name,
+        center=center_val,
+        mask=mask,  # 隐藏不显著/失败的区域
+        linewidths=0.5,
+        cbar_kws={"label": cbar_label}
+    )
+
+    title_suffix = "Log(Odds Ratio)" if metric == "or" else "Coefficients"
+    plt.title(f"Ordinal Regression Matrix ({title_suffix}, p<0.05)\n(Subsets: {subset_label})", fontsize=14)
+    plt.xlabel("Acoustic Features")
+    plt.ylabel("Vocal Techniques")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"ordinal_heatmap_{metric}.png"), dpi=300)
+    plt.close()
+
+    print(f"[+] 序数回归矩阵 ({metric}) 完成。")
+    print(
+        f"    统计: 成功={convergence_stats['success']}, "
+        f"未收敛={convergence_stats['failed']}, "
+        f"分离/异常={convergence_stats['separation']}"
+    )
+
+
 if __name__ == '__main__':
     # 切换到项目根目录
     proj_root = os.path.abspath(os.path.join(__file__, "../.."))
@@ -266,6 +609,7 @@ if __name__ == '__main__':
     outputs_root = os.path.join(proj_root, "outputs")
     raw_feats_dir = os.path.join(outputs_root, "raw_feats", dataset_name)
     analysis_dir = os.path.join(outputs_root, "analysis")
+    matrix_dir = os.path.join(outputs_root, "matrix")
 
     print("[*] 开始提取特征统计信息...")
     from src.feat_extractor import extract_feats_stats_from_csv
@@ -282,8 +626,13 @@ if __name__ == '__main__':
     print("[+] 合并完成！")
 
     print("[*] 开始分析...")
-    for tech in combined_data.tech_cols:
-        for subset_group in subset_groups:
-            run_pca_analysis(combined_data, tech, analysis_dir, subset_group)
-            run_lasso_analysis(combined_data, tech, analysis_dir, subset_group)
-            run_ordinal_regression(combined_data, tech, analysis_dir, subset_group)
+    # for tech in combined_data.tech_cols:
+    #     for subset_group in subset_groups:
+    #         run_pca_analysis(combined_data, tech, analysis_dir, subset_group)
+    #         run_lasso_analysis(combined_data, tech, analysis_dir, subset_group)
+    #         run_ordinal_regression(combined_data, tech, analysis_dir, subset_group)
+
+    run_correlation_matrix(combined_data, matrix_dir)
+    # run_lasso_correlation_matrix(combined_data, matrix_dir)
+    # run_ordinal_correlation_matrix(combined_data, matrix_dir, metric="coef")
+    # run_ordinal_correlation_matrix(combined_data, matrix_dir, metric="or")
